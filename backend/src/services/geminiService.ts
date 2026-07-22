@@ -72,7 +72,7 @@ export const geminiService = {
     aiSide: string,
     difficulty: string
   ): Promise<string> => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
 
     const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty);
     const sideLabel = aiSide === 'support' ? 'supporting' : 'opposing';
@@ -99,7 +99,7 @@ Begin your opening argument now.`;
     history: DebateMessage[],
     userMessage: string
   ): Promise<string> => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
 
     const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty);
 
@@ -140,7 +140,7 @@ Now respond to your opponent's argument. Remember to:
     weaknesses: string[];
     suggestions: string[];
   }> => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
 
     let transcript = '';
     for (const msg of history) {
