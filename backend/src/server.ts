@@ -1,20 +1,14 @@
 import app from './app';
 import { config } from './config';
 import { initializeFirebase } from './config/firebase';
-import pool from './database/connection';
 
 const startServer = async () => {
   try {
-    // Test database connection
-    const client = await pool.connect();
-    console.log('✅ PostgreSQL connected');
-    client.release();
-
     // Initialize Firebase Admin
     initializeFirebase();
     console.log('✅ Firebase Admin initialized');
 
-    // Start server
+    // Start server — DB connection is tested separately with retries in connection.ts
     app.listen(config.port, () => {
       console.log(`\n🚀 AI Debate Trainer API running on port ${config.port}`);
       console.log(`   Environment: ${config.nodeEnv}`);
