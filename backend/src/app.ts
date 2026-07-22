@@ -12,9 +12,32 @@ const app = express();
 
 // Security
 app.use(helmet());
+
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
+
+if (process.env.FRONTEND_URL) {
+  const envOrigins = process.env.FRONTEND_URL.split(',').map(url => url.trim().replace(/\/$/, ''));
+  allowedOrigins.push(...envOrigins);
+}
+
 app.use(
   cors({
-    origin: config.frontendUrl,
+    origin: (origin, callback) => {
+      // Allow server-to-server, Postman, or non-browser requests
+      if (!origin) return callback(null, true);
+
+      // Clean trailing slash if present
+      const cleanOrigin = origin.replace(/\/$/, '');
+
+      if (allowedOrigins.includes(cleanOrigin) || cleanOrigin.endsWith('.vercel.app')) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS policy blocked request from origin: ${origin}`));
+    },
     credentials: true,
   })
 );
