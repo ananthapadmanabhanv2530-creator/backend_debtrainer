@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { getAuth } from '../config/firebase';
-import { userQueries } from '../database/queries';
+import { userQueries, statisticsQueries } from '../database/queries';
 import { UnauthorizedError } from '../utils/errors';
 
 export interface AuthenticatedRequest extends Request {
@@ -32,10 +32,17 @@ export const authMiddleware = async (
 
     const decodedToken = await getAuth().verifyIdToken(token);
 
-    const dbUser = await userQueries.findByFirebaseUid(decodedToken.uid);
+    let dbUser = await userQueries.findByFirebaseUid(decodedToken.uid);
 
     if (!dbUser) {
-      throw new UnauthorizedError('User not found in database. Please login first.');
+      const { uid, email, name, picture } = decodedToken;
+      dbUser = await userQueries.upsert(
+        uid,
+        name || email?.split('@')[0] || 'User',
+        email || '',
+        picture || undefined
+      );
+      await statisticsQueries.getOrCreate(dbUser.id);
     }
 
     req.user = {
@@ -50,6 +57,7 @@ export const authMiddleware = async (
     if (error instanceof UnauthorizedError) {
       next(error);
     } else {
+      console.error('Auth middleware token verification failed:', error);
       next(new UnauthorizedError('Invalid or expired token'));
     }
   }
