@@ -54,6 +54,7 @@ export const debateController = {
         },
       });
     } catch (error) {
+      console.error('[DebateController:start] Error:', error);
       next(error);
     }
   },
