@@ -1,7 +1,7 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { config } from '../config/index';
 
-const genAI = new GoogleGenerativeAI(config.geminiApiKey);
+const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
 
 interface DebateMessage {
   role: 'user' | 'assistant' | 'system';
@@ -72,8 +72,6 @@ export const geminiService = {
     aiSide: string,
     difficulty: string
   ): Promise<string> => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-
     const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty);
     const sideLabel = aiSide === 'support' ? 'supporting' : 'opposing';
 
@@ -87,9 +85,12 @@ Deliver your opening argument. Set the stage for the debate by:
 
 Begin your opening argument now.`;
 
-    const result = await model.generateContent(prompt);
-    const response = result.response;
-    return response.text();
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.6-flash',
+      input: prompt,
+    });
+
+    return interaction.output_text || '';
   },
 
   continueDebate: async (
@@ -99,8 +100,6 @@ Begin your opening argument now.`;
     history: DebateMessage[],
     userMessage: string
   ): Promise<string> => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-
     const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty);
 
     // Build conversation context
@@ -119,9 +118,12 @@ Now respond to your opponent's argument. Remember to:
 4. Present new evidence or angles
 5. End with a probing question or challenge`;
 
-    const result = await model.generateContent(conversationContext);
-    const response = result.response;
-    return response.text();
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.6-flash',
+      input: conversationContext,
+    });
+
+    return interaction.output_text || '';
   },
 
   evaluateDebate: async (
@@ -140,8 +142,6 @@ Now respond to your opponent's argument. Remember to:
     weaknesses: string[];
     suggestions: string[];
   }> => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-
     let transcript = '';
     for (const msg of history) {
       const speaker = msg.role === 'user' ? 'USER' : 'AI_OPPONENT';
@@ -160,19 +160,6 @@ ${transcript}
 Evaluate the USER's performance (NOT the AI opponent) on the following criteria.
 Score each from 0.0 to 10.0 (one decimal place).
 
-Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):
-{
-  "logicScore": <number>,
-  "evidenceScore": <number>,
-  "clarityScore": <number>,
-  "confidenceScore": <number>,
-  "persuasionScore": <number>,
-  "overallScore": <number>,
-  "strengths": ["<strength1>", "<strength2>", "<strength3>"],
-  "weaknesses": ["<weakness1>", "<weakness2>", "<weakness3>"],
-  "suggestions": ["<suggestion1>", "<suggestion2>", "<suggestion3>"]
-}
-
 SCORING GUIDE:
 - Logic (0-10): Quality of reasoning, argument structure, avoiding fallacies
 - Evidence (0-10): Use of facts, examples, data, and supporting evidence
@@ -184,8 +171,37 @@ SCORING GUIDE:
 Consider the difficulty level when scoring. At "${difficulty}" level, adjust expectations accordingly.
 Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
 
-    const result = await model.generateContent(prompt);
-    const responseText = result.response.text();
+    const evaluationJsonSchema = {
+      type: 'object',
+      properties: {
+        logicScore: { type: 'number' },
+        evidenceScore: { type: 'number' },
+        clarityScore: { type: 'number' },
+        confidenceScore: { type: 'number' },
+        persuasionScore: { type: 'number' },
+        overallScore: { type: 'number' },
+        strengths: { type: 'array', items: { type: 'string' } },
+        weaknesses: { type: 'array', items: { type: 'string' } },
+        suggestions: { type: 'array', items: { type: 'string' } },
+      },
+      required: [
+        'logicScore', 'evidenceScore', 'clarityScore',
+        'confidenceScore', 'persuasionScore', 'overallScore',
+        'strengths', 'weaknesses', 'suggestions'
+      ],
+    };
+
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.6-flash',
+      input: prompt,
+      response_format: {
+        type: 'text',
+        mime_type: 'application/json',
+        schema: evaluationJsonSchema,
+      },
+    });
+
+    const responseText = interaction.output_text || '{}';
 
     // Parse the JSON response, handling potential markdown wrapping
     let cleanedText = responseText.trim();
@@ -242,8 +258,6 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
     history: DebateMessage[],
     hintType: string
   ): Promise<string> => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-
     let transcript = '';
     for (const msg of history) {
       const speaker = msg.role === 'user' ? 'USER' : 'AI_OPPONENT';
@@ -279,16 +293,18 @@ RULES:
 - Keep the hint under 150 words
 - Format clearly with bullet points if needed`;
 
-    const result = await model.generateContent(prompt);
-    return result.response.text();
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.6-flash',
+      input: prompt,
+    });
+
+    return interaction.output_text || '';
   },
 
   correctSpeech: async (
     transcript: string,
     topic?: string
   ): Promise<string> => {
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-
     const prompt = `You are a speech-to-text auto-correct assistant for a debate platform.
 Your task is to fix phonetic errors, typos, misheard words, capitalization, and punctuation in the raw voice transcript.
 
@@ -303,7 +319,11 @@ RULES:
 3. DO NOT change the debater's core argument, tone, or key ideas.
 4. Output ONLY the corrected text, with no explanations, intro, quotes, or markdown wrappers.`;
 
-    const result = await model.generateContent(prompt);
-    return result.response.text().trim();
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.6-flash',
+      input: prompt,
+    });
+
+    return (interaction.output_text || '').trim();
   },
 };
