@@ -9,7 +9,7 @@ export const debateController = {
   // POST /debate/start
   start: async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const { topic, category, difficulty, userSide } = req.body;
+      const { topic, category, difficulty, userSide, config } = req.body;
 
       // Determine sides
       let finalUserSide = userSide;
@@ -25,7 +25,8 @@ export const debateController = {
         category || 'General',
         difficulty || 'medium',
         finalUserSide,
-        aiSide
+        aiSide,
+        config || {}
       );
 
       // Generate AI opening argument
@@ -45,6 +46,7 @@ export const debateController = {
           aiSide: debate.ai_side,
           status: debate.status,
           startedAt: debate.started_at,
+          config: debate.config || {},
         },
         message: {
           role: 'assistant',
@@ -232,6 +234,7 @@ export const debateController = {
           endedAt: debate.ended_at,
           duration: debate.duration,
           overallScore: debate.overall_score,
+          config: debate.config || {},
         },
         messages: messages.map((m: any) => ({
           id: m.id,
@@ -274,6 +277,53 @@ export const debateController = {
       res.json({
         success: true,
         message: 'Debate deleted successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  // POST /debate/hint
+  hint: async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { debateId, hintType } = req.body;
+
+      const debate = await debateQueries.findById(debateId);
+      if (!debate) {
+        throw new NotFoundError('Debate not found');
+      }
+      if (debate.user_id !== req.user!.id) {
+        throw new ForbiddenError('Not your debate');
+      }
+      if (debate.status !== 'active') {
+        throw new ValidationError('Debate is not active');
+      }
+
+      // Check if hints are enabled in config
+      const config = debate.config || {};
+      if (config.hints && !config.hints.enabled) {
+        throw new ValidationError('Hints are disabled for this debate');
+      }
+
+      // Get debate history for context
+      const history = await messageQueries.findByDebateId(debateId);
+      const formattedHistory = history.map((m: any) => ({
+        role: m.role as 'user' | 'assistant',
+        message: m.message,
+      }));
+
+      const hint = await geminiService.generateHint(
+        debate.topic,
+        debate.user_side,
+        debate.difficulty,
+        formattedHistory,
+        hintType || 'keyword'
+      );
+
+      res.json({
+        success: true,
+        hint,
+        hintType: hintType || 'keyword',
       });
     } catch (error) {
       next(error);
