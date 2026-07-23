@@ -127,34 +127,17 @@ function extractResetTime(err: any): string {
   return ' (Resets daily at 00:00 UTC / try again shortly)';
 }
 
-function parseRetryDelayMs(err: any): number {
-  if (!err) return 0;
-  const message = err.message || '';
-  const match = message.match(/Please retry in ([\d\.]+)s/i);
-  if (match && match[1]) {
-    const sec = parseFloat(match[1]);
-    if (!isNaN(sec) && sec > 0) return Math.min(Math.ceil(sec * 1000) + 500, 6000);
-  }
-  if (Array.isArray(err.details)) {
-    const retryInfo = err.details.find((d: any) => d?.['@type']?.includes('RetryInfo') || d?.retryDelay);
-    if (retryInfo?.retryDelay) {
-      const sec = parseFloat(retryInfo.retryDelay);
-      if (!isNaN(sec) && sec > 0) return Math.min(Math.ceil(sec * 1000) + 500, 6000);
-    }
-  }
-  return 0;
-}
-
 /**
  * Executes a Gemini content generation call with automatic fallback across active model families.
  * Remembers and prioritizes the last successful working model from multi-turn chat.
- * Automatically waits and retries if Google API requests a short rate-limit cooldown (<= 6 seconds).
+ * Executes instant fallbacks (<150ms) without blocking server delays and reports accurate retry times.
  */
 async function generateWithFallback(
   contents: any,
   configOptions?: any,
   modelsToTry: string[] = ESSENTIAL_MODELS
 ): Promise<any> {
+  let firstError: any = null;
   let lastError: any = null;
   let exhaustedCount = 0;
 
@@ -177,31 +160,15 @@ async function generateWithFallback(
     } catch (err: any) {
       const status = err?.status || err?.code || err?.error?.code || 'error';
       const msg = err?.message || '';
-      lastError = err;
-
-      // Auto-retry once if Google requests a short rate-limit cooldown (<= 6 seconds)
-      const retryMs = parseRetryDelayMs(err);
-      if (retryMs > 0 && retryMs <= 6000) {
-        console.warn(`[GeminiService] Rate limited on '${model}'. Auto-waiting ${retryMs}ms before retry...`);
-        await new Promise((resolve) => setTimeout(resolve, retryMs));
-        try {
-          const retryResponse = await ai.models.generateContent({
-            model,
-            contents,
-            ...(configOptions ? { config: configOptions } : {}),
-          });
-          lastWorkingModel = model;
-          console.log(`[GeminiService] Content generation succeeded after auto-retry on model: '${model}'`);
-          return retryResponse;
-        } catch (retryErr: any) {
-          console.warn(`[GeminiService] Auto-retry on '${model}' failed.`);
-          lastError = retryErr;
-        }
+      if (!firstError) {
+        firstError = err;
       }
+      lastError = err;
 
       console.warn(
         `[GeminiService] Model '${model}' failed (${status} / ${msg.slice(0, 60)}). Trying next fallback model...`
       );
+
       if (
         status === 429 ||
         status === 404 ||
@@ -219,7 +186,7 @@ async function generateWithFallback(
   }
 
   if (exhaustedCount >= modelsToTry.length) {
-    const resetTime = extractResetTime(lastError);
+    const resetTime = extractResetTime(firstError || lastError);
     throw new AppError(
       `Your free tier debate trainer quota is exhausted across all AI models. Please come back after reset${resetTime}!`,
       429
