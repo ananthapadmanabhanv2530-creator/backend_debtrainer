@@ -282,4 +282,28 @@ RULES:
     const result = await model.generateContent(prompt);
     return result.response.text();
   },
+
+  correctSpeech: async (
+    transcript: string,
+    topic?: string
+  ): Promise<string> => {
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
+
+    const prompt = `You are a speech-to-text auto-correct assistant for a debate platform.
+Your task is to fix phonetic errors, typos, misheard words, capitalization, and punctuation in the raw voice transcript.
+
+${topic ? `DEBATE TOPIC: "${topic}"` : ''}
+
+RAW SPEECH TRANSCRIPT:
+"${transcript}"
+
+RULES:
+1. Fix misheard words and speech recognition mistakes (e.g. "for example" instead of "four example", technical debate terminology).
+2. Fix punctuation, sentence structure, and capitalization.
+3. DO NOT change the debater's core argument, tone, or key ideas.
+4. Output ONLY the corrected text, with no explanations, intro, quotes, or markdown wrappers.`;
+
+    const result = await model.generateContent(prompt);
+    return result.response.text().trim();
+  },
 };
