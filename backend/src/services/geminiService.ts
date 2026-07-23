@@ -109,22 +109,41 @@ FORMAT:
 }
 
 function extractResetTime(err: any): string {
-  if (!err) return ' (Resets daily at 00:00 UTC / try again shortly)';
+  if (!err) return ' (Resets daily at 00:00 UTC)';
 
   const message = err.message || '';
-  const match = message.match(/Please retry in ([\d\.]+[smh]?)/i);
+  const detailsStr = JSON.stringify(err?.details || []);
+
+  // Check if daily request/token limit is exhausted across projects
+  const isDailyExhausted =
+    message.includes('PerDay') ||
+    message.includes('GenerateRequestsPerDay') ||
+    detailsStr.includes('PerDay') ||
+    detailsStr.includes('GenerateRequestsPerDay');
+
+  if (isDailyExhausted) {
+    return ' (Daily free limit reached. Resets at 00:00 UTC)';
+  }
+
+  const match = message.match(/Please retry in ([\d\.]+)/i);
   if (match && match[1]) {
-    return ` (Please retry in ${match[1]})`;
+    const sec = Math.ceil(parseFloat(match[1]));
+    if (!isNaN(sec) && sec > 0) {
+      return ` (Please retry in ${sec}s)`;
+    }
   }
 
   if (Array.isArray(err.details)) {
     const retryInfo = err.details.find((d: any) => d?.['@type']?.includes('RetryInfo') || d?.retryDelay);
     if (retryInfo?.retryDelay) {
-      return ` (Please retry in ${retryInfo.retryDelay})`;
+      const sec = Math.ceil(parseFloat(retryInfo.retryDelay));
+      if (!isNaN(sec) && sec > 0) {
+        return ` (Please retry in ${sec}s)`;
+      }
     }
   }
 
-  return ' (Resets daily at 00:00 UTC / try again shortly)';
+  return ' (Resets daily at 00:00 UTC)';
 }
 
 /**
