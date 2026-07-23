@@ -234,4 +234,52 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
       };
     }
   },
+
+  generateHint: async (
+    topic: string,
+    userSide: string,
+    difficulty: string,
+    history: DebateMessage[],
+    hintType: string
+  ): Promise<string> => {
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
+
+    let transcript = '';
+    for (const msg of history) {
+      const speaker = msg.role === 'user' ? 'USER' : 'AI_OPPONENT';
+      transcript += `${speaker}: ${msg.message}\n\n`;
+    }
+
+    const hintPrompts: Record<string, string> = {
+      keyword: `Suggest 3-5 powerful keywords or phrases the debater should use in their next argument. Focus on impactful terminology, technical terms, and persuasive language relevant to this topic and position.`,
+      outline: `Provide a brief structured outline (3-4 bullet points) for the debater's next argument. Include a main claim, supporting points, and a strong concluding statement.`,
+      counterArgument: `Analyze the AI opponent's last argument and provide 2-3 specific counter-arguments the debater could use. Focus on logical weaknesses and alternative interpretations.`,
+      evidence: `Suggest 2-3 specific examples, statistics, or real-world evidence the debater could cite to strengthen their position. Include brief explanations of why each is relevant.`,
+      socratic: `Provide 2-3 thought-provoking Socratic questions the debater could ask to challenge the opponent's reasoning and reveal weaknesses in their argument.`,
+    };
+
+    const hintInstruction = hintPrompts[hintType] || hintPrompts.keyword;
+
+    const prompt = `You are a debate coach providing a hint to a student debater.
+
+DEBATE TOPIC: "${topic}"
+STUDENT'S POSITION: ${userSide === 'support' ? 'Supporting' : 'Opposing'}
+DIFFICULTY: ${difficulty}
+
+DEBATE SO FAR:
+${transcript}
+
+HINT REQUEST TYPE: ${hintType}
+
+${hintInstruction}
+
+RULES:
+- Be concise and actionable
+- Don't write the argument for them — guide them
+- Keep the hint under 150 words
+- Format clearly with bullet points if needed`;
+
+    const result = await model.generateContent(prompt);
+    return result.response.text();
+  },
 };
