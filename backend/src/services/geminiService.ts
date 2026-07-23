@@ -5,6 +5,9 @@ import { AppError } from '../utils/errors';
 const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const ai = new GoogleGenAI(apiKey ? { apiKey } : {});
 
+// Memory tracking for the last working model that succeeded during the active debate session
+let lastWorkingModel: string | null = null;
+
 // Essential & Evaluator fallback chain: High to Low power
 const ESSENTIAL_MODELS = [
   process.env.GEMINI_MODEL || 'gemini-3.6-flash',
@@ -124,8 +127,28 @@ function extractResetTime(err: any): string {
   return ' (Resets daily at 00:00 UTC / try again shortly)';
 }
 
+function parseRetryDelayMs(err: any): number {
+  if (!err) return 0;
+  const message = err.message || '';
+  const match = message.match(/Please retry in ([\d\.]+)s/i);
+  if (match && match[1]) {
+    const sec = parseFloat(match[1]);
+    if (!isNaN(sec) && sec > 0) return Math.min(Math.ceil(sec * 1000) + 500, 6000);
+  }
+  if (Array.isArray(err.details)) {
+    const retryInfo = err.details.find((d: any) => d?.['@type']?.includes('RetryInfo') || d?.retryDelay);
+    if (retryInfo?.retryDelay) {
+      const sec = parseFloat(retryInfo.retryDelay);
+      if (!isNaN(sec) && sec > 0) return Math.min(Math.ceil(sec * 1000) + 500, 6000);
+    }
+  }
+  return 0;
+}
+
 /**
  * Executes a Gemini content generation call with automatic fallback across active model families.
+ * Remembers and prioritizes the last successful working model from multi-turn chat.
+ * Automatically waits and retries if Google API requests a short rate-limit cooldown (<= 6 seconds).
  */
 async function generateWithFallback(
   contents: any,
@@ -135,21 +158,50 @@ async function generateWithFallback(
   let lastError: any = null;
   let exhaustedCount = 0;
 
-  for (const model of modelsToTry) {
+  // Re-order models to try the last successful working model FIRST
+  const orderedModels = lastWorkingModel && modelsToTry.includes(lastWorkingModel)
+    ? [lastWorkingModel, ...modelsToTry.filter((m) => m !== lastWorkingModel)]
+    : modelsToTry;
+
+  for (const model of orderedModels) {
     try {
       const response = await ai.models.generateContent({
         model,
         contents,
         ...(configOptions ? { config: configOptions } : {}),
       });
+      // Store and remember the working model for subsequent evaluation/turns!
+      lastWorkingModel = model;
+      console.log(`[GeminiService] Content generation successful using model: '${model}'`);
       return response;
     } catch (err: any) {
       const status = err?.status || err?.code || err?.error?.code || 'error';
       const msg = err?.message || '';
+      lastError = err;
+
+      // Auto-retry once if Google requests a short rate-limit cooldown (<= 6 seconds)
+      const retryMs = parseRetryDelayMs(err);
+      if (retryMs > 0 && retryMs <= 6000) {
+        console.warn(`[GeminiService] Rate limited on '${model}'. Auto-waiting ${retryMs}ms before retry...`);
+        await new Promise((resolve) => setTimeout(resolve, retryMs));
+        try {
+          const retryResponse = await ai.models.generateContent({
+            model,
+            contents,
+            ...(configOptions ? { config: configOptions } : {}),
+          });
+          lastWorkingModel = model;
+          console.log(`[GeminiService] Content generation succeeded after auto-retry on model: '${model}'`);
+          return retryResponse;
+        } catch (retryErr: any) {
+          console.warn(`[GeminiService] Auto-retry on '${model}' failed.`);
+          lastError = retryErr;
+        }
+      }
+
       console.warn(
         `[GeminiService] Model '${model}' failed (${status} / ${msg.slice(0, 60)}). Trying next fallback model...`
       );
-      lastError = err;
       if (
         status === 429 ||
         status === 404 ||
@@ -310,7 +362,7 @@ RULES:
       transcript += `${speaker}: ${msg.message}\n\n`;
     }
 
-    const prompt = `You are an expert debate judge and coach evaluating a debate conducted in ${langName}.
+    const prompt = `You are an expert debate judge evaluating a debate conducted in ${langName}.
 
 DEBATE TOPIC: "${topic}"
 USER'S POSITION: ${userSide === 'support' ? 'Supporting' : 'Opposing'} the topic
@@ -320,35 +372,25 @@ LANGUAGE: ${langName} (${language})
 FULL DEBATE TRANSCRIPT:
 ${transcript}
 
-Evaluate the USER's performance on the following criteria. Score each from 0.0 to 10.0.
-Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions written in ${langName}.`;
+Evaluate the USER's performance on the following criteria (0.0 to 10.0 scale).
+Provide 3 strengths, 3 weaknesses, and 3 actionable suggestions written in ${langName}.
 
-    const evaluationJsonSchema = {
-      type: 'object',
-      properties: {
-        logicScore: { type: 'number' },
-        evidenceScore: { type: 'number' },
-        clarityScore: { type: 'number' },
-        confidenceScore: { type: 'number' },
-        persuasionScore: { type: 'number' },
-        overallScore: { type: 'number' },
-        strengths: { type: 'array', items: { type: 'string' } },
-        weaknesses: { type: 'array', items: { type: 'string' } },
-        suggestions: { type: 'array', items: { type: 'string' } },
-      },
-      required: [
-        'logicScore', 'evidenceScore', 'clarityScore',
-        'confidenceScore', 'persuasionScore', 'overallScore',
-        'strengths', 'weaknesses', 'suggestions'
-      ],
-    };
+Respond ONLY with valid JSON in this exact structure:
+{
+  "logicScore": 8.0,
+  "evidenceScore": 7.5,
+  "clarityScore": 8.5,
+  "confidenceScore": 8.0,
+  "persuasionScore": 8.0,
+  "overallScore": 8.0,
+  "strengths": ["...", "...", "..."],
+  "weaknesses": ["...", "...", "..."],
+  "suggestions": ["...", "...", "..."]
+}`;
 
     const response = await generateWithFallback(
       prompt,
-      {
-        responseMimeType: 'application/json',
-        responseSchema: evaluationJsonSchema,
-      },
+      { responseMimeType: 'application/json' },
       ESSENTIAL_MODELS
     );
 
@@ -359,45 +401,30 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions written 
       cleanedText = cleanedText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     }
 
-    try {
-      const evaluation = JSON.parse(cleanedText);
+    const evaluation = JSON.parse(cleanedText);
 
-      const clamp = (val: any, min: number, max: number): number => {
-        const num = parseFloat(val) || 0;
-        return Math.min(max, Math.max(min, Math.round(num * 10) / 10));
-      };
+    const clamp = (val: any, min: number, max: number): number => {
+      const num = parseFloat(val) || 0;
+      return Math.min(max, Math.max(min, Math.round(num * 10) / 10));
+    };
 
-      return {
-        logicScore: clamp(evaluation.logicScore, 0, 10),
-        evidenceScore: clamp(evaluation.evidenceScore, 0, 10),
-        clarityScore: clamp(evaluation.clarityScore, 0, 10),
-        confidenceScore: clamp(evaluation.confidenceScore, 0, 10),
-        persuasionScore: clamp(evaluation.persuasionScore, 0, 10),
-        overallScore: clamp(evaluation.overallScore, 0, 10),
-        strengths: Array.isArray(evaluation.strengths)
-          ? evaluation.strengths.slice(0, 5)
-          : ['Good effort'],
-        weaknesses: Array.isArray(evaluation.weaknesses)
-          ? evaluation.weaknesses.slice(0, 5)
-          : ['Keep practicing'],
-        suggestions: Array.isArray(evaluation.suggestions)
-          ? evaluation.suggestions.slice(0, 5)
-          : ['Continue debating to improve'],
-      };
-    } catch (parseError) {
-      console.error('Failed to parse AI evaluation:', parseError, responseText);
-      return {
-        logicScore: 5.0,
-        evidenceScore: 5.0,
-        clarityScore: 5.0,
-        confidenceScore: 5.0,
-        persuasionScore: 5.0,
-        overallScore: 5.0,
-        strengths: ['Participated in the debate', 'Engaged with the topic', 'Completed the session'],
-        weaknesses: ['Evaluation could not be fully parsed', 'Try again for detailed feedback'],
-        suggestions: ['Continue practicing to get more detailed evaluations'],
-      };
-    }
+    return {
+      logicScore: clamp(evaluation.logicScore, 0, 10),
+      evidenceScore: clamp(evaluation.evidenceScore, 0, 10),
+      clarityScore: clamp(evaluation.clarityScore, 0, 10),
+      confidenceScore: clamp(evaluation.confidenceScore, 0, 10),
+      persuasionScore: clamp(evaluation.persuasionScore, 0, 10),
+      overallScore: clamp(evaluation.overallScore, 0, 10),
+      strengths: Array.isArray(evaluation.strengths) && evaluation.strengths.length > 0
+        ? evaluation.strengths.slice(0, 5)
+        : ['Good engagement in the debate session'],
+      weaknesses: Array.isArray(evaluation.weaknesses) && evaluation.weaknesses.length > 0
+        ? evaluation.weaknesses.slice(0, 5)
+        : ['Keep practicing to sharpen your arguments'],
+      suggestions: Array.isArray(evaluation.suggestions) && evaluation.suggestions.length > 0
+        ? evaluation.suggestions.slice(0, 5)
+        : ['Continue practicing across different topics'],
+    };
   },
 
   // NON-ESSENTIAL: Speech Auto-Correct
