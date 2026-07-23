@@ -6,16 +6,35 @@ import { query } from './connection';
 
 export const userQueries = {
   upsert: async (firebaseUid: string, name: string, email: string, profilePhoto?: string) => {
+    const cleanEmail = (email || '').trim().toLowerCase();
+
+    // Check if user already exists by firebase_uid or by email
+    const existing = await query(
+      `SELECT * FROM users WHERE firebase_uid = $1 OR (email IS NOT NULL AND LOWER(email) = $2 AND $2 != '')`,
+      [firebaseUid, cleanEmail]
+    );
+
+    if (existing.rows.length > 0) {
+      const u = existing.rows[0];
+      const updated = await query(
+        `UPDATE users SET
+           firebase_uid = $1,
+           name = COALESCE(NULLIF($2, ''), users.name),
+           email = COALESCE(NULLIF($3, ''), users.email),
+           profile_photo = COALESCE($4, users.profile_photo),
+           last_login = NOW()
+         WHERE id = $5
+         RETURNING *`,
+        [firebaseUid, name || '', cleanEmail || u.email, profilePhoto || null, u.id]
+      );
+      return updated.rows[0];
+    }
+
     const result = await query(
       `INSERT INTO users (firebase_uid, name, email, profile_photo, last_login)
        VALUES ($1, $2, $3, $4, NOW())
-       ON CONFLICT (firebase_uid) DO UPDATE SET
-         name = COALESCE($2, users.name),
-         email = COALESCE($3, users.email),
-         profile_photo = COALESCE($4, users.profile_photo),
-         last_login = NOW()
        RETURNING *`,
-      [firebaseUid, name, email, profilePhoto || null]
+      [firebaseUid, name || 'User', cleanEmail, profilePhoto || null]
     );
     return result.rows[0];
   },
@@ -42,13 +61,14 @@ export const debateQueries = {
     category: string,
     difficulty: string,
     userSide: string,
-    aiSide: string
+    aiSide: string,
+    config: Record<string, any> = {}
   ) => {
     const result = await query(
-      `INSERT INTO debates (user_id, topic, category, difficulty, user_side, ai_side, status, started_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'active', NOW())
+      `INSERT INTO debates (user_id, topic, category, difficulty, user_side, ai_side, config, status, started_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 'active', NOW())
        RETURNING *`,
-      [userId, topic, category, difficulty, userSide, aiSide]
+      [userId, topic, category, difficulty, userSide, aiSide, JSON.stringify(config)]
     );
     return result.rows[0];
   },
