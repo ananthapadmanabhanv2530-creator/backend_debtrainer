@@ -5,14 +5,19 @@ import { AppError } from '../utils/errors';
 const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const ai = new GoogleGenAI(apiKey ? { apiKey } : {});
 
-// Model fallback chains (Each model has an independent quota limit in Google Cloud)
+// Model fallback chains in decreasing order of capability
 const ESSENTIAL_MODELS = [
   process.env.GEMINI_MODEL || 'gemini-3.6-flash',
-  'gemini-2.5-flash',
+  'gemini-3.5-flash',
+  'gemini-2.5-pro',
   'gemini-2.0-flash',
-  'gemini-1.5-flash',
+  'gemini-2.0-flash-lite',
 ];
-const NON_ESSENTIAL_MODELS = ['gemini-1.5-flash', 'gemini-2.0-flash'];
+const NON_ESSENTIAL_MODELS = [
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-3.5-flash',
+];
 
 interface DebateMessage {
   role: 'user' | 'assistant' | 'system';
@@ -97,8 +102,8 @@ function extractResetTime(err: any): string {
 }
 
 /**
- * Executes a Gemini content generation call with automatic fallback across independent model families.
- * Always attempts gemini-3.6-flash first. If quota/rate limit occurs, falls back to 2.5 -> 2.0 -> 1.5.
+ * Executes a Gemini content generation call with automatic fallback across active model families.
+ * Attempts gemini-3.6-flash first. If quota/rate limit occurs, falls back to 3.5-flash -> 2.0-flash.
  */
 async function generateWithFallback(
   contents: any,
@@ -148,7 +153,7 @@ async function generateWithFallback(
 }
 
 export const geminiService = {
-  // ESSENTIAL: Opening Debate Argument (3.6 -> 2.5 -> 2.0 -> 1.5)
+  // ESSENTIAL: Opening Debate Argument (3.6-flash -> 3.5-flash -> 2.0-flash)
   startDebate: async (
     topic: string,
     aiSide: string,
@@ -171,7 +176,7 @@ Begin your opening argument now.`;
     return response.text || '';
   },
 
-  // ESSENTIAL: Multi-turn Debate Responses (3.6 -> 2.5 -> 2.0 -> 1.5)
+  // ESSENTIAL: Multi-turn Debate Responses
   continueDebate: async (
     topic: string,
     aiSide: string,
@@ -200,7 +205,7 @@ Now respond to your opponent's argument. Remember to:
     return response.text || '';
   },
 
-  // ESSENTIAL: Debate Hints (3.6 -> 2.5 -> 2.0 -> 1.5)
+  // ESSENTIAL: Debate Hints
   generateHint: async (
     topic: string,
     userSide: string,
