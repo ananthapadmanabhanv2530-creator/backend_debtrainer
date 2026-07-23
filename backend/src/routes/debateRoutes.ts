@@ -14,6 +14,7 @@ const startDebateSchema = z.object({
   category: z.string().optional(),
   difficulty: z.enum(['easy', 'medium', 'hard', 'expert']).optional(),
   userSide: z.enum(['support', 'oppose', 'random']),
+  config: z.record(z.any()).optional(),
 });
 
 const sendMessageSchema = z.object({
@@ -25,9 +26,15 @@ const endDebateSchema = z.object({
   debateId: z.number().int().positive(),
 });
 
+const hintSchema = z.object({
+  debateId: z.number().int().positive(),
+  hintType: z.enum(['keyword', 'outline', 'counterArgument', 'evidence', 'socratic']).optional(),
+});
+
 router.post('/start', validate(startDebateSchema), debateController.start);
 router.post('/message', validate(sendMessageSchema), debateController.sendMessage);
 router.post('/end', validate(endDebateSchema), debateController.end);
+router.post('/hint', validate(hintSchema), debateController.hint);
 router.get('/history', debateController.getHistory);
 router.get('/:id', debateController.getById);
 router.delete('/:id', debateController.delete);
