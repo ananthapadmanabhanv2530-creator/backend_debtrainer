@@ -17,6 +17,7 @@ const NON_ESSENTIAL_MODELS = [
   'gemini-2.0-flash-lite',
   'gemini-2.0-flash',
   'gemini-3.5-flash',
+  process.env.GEMINI_MODEL || 'gemini-3.6-flash',
 ];
 
 interface DebateMessage {
@@ -103,7 +104,6 @@ function extractResetTime(err: any): string {
 
 /**
  * Executes a Gemini content generation call with automatic fallback across active model families.
- * Attempts gemini-3.6-flash first. If quota/rate limit occurs, falls back to 3.5-flash -> 2.0-flash.
  */
 async function generateWithFallback(
   contents: any,
@@ -122,17 +122,22 @@ async function generateWithFallback(
       });
       return response;
     } catch (err: any) {
-      const status = err?.status || err?.code || 'error';
+      const status = err?.status || err?.code || err?.error?.code || 'error';
+      const msg = err?.message || '';
       console.warn(
-        `[GeminiService] Model '${model}' failed (${status}). Trying next fallback model...`
+        `[GeminiService] Model '${model}' failed (${status} / ${msg.slice(0, 60)}). Trying next fallback model...`
       );
       lastError = err;
       if (
         status === 429 ||
         status === 404 ||
-        err?.message?.includes('RESOURCE_EXHAUSTED') ||
-        err?.message?.includes('Quota exceeded') ||
-        err?.message?.includes('not found')
+        status === 503 ||
+        status === 'RESOURCE_EXHAUSTED' ||
+        status === 'UNAVAILABLE' ||
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('Quota exceeded') ||
+        msg.includes('not found') ||
+        msg.includes('high demand')
       ) {
         exhaustedCount++;
       }
@@ -153,7 +158,7 @@ async function generateWithFallback(
 }
 
 export const geminiService = {
-  // ESSENTIAL: Opening Debate Argument (3.6-flash -> 3.5-flash -> 2.0-flash)
+  // ESSENTIAL: Opening Debate Argument
   startDebate: async (
     topic: string,
     aiSide: string,
