@@ -329,4 +329,25 @@ export const debateController = {
       next(error);
     }
   },
+
+  // POST /debate/correct-speech
+  correctSpeech: async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { transcript, topic } = req.body;
+
+      if (!transcript || typeof transcript !== 'string' || !transcript.trim()) {
+        throw new ValidationError('Transcript is required');
+      }
+
+      const corrected = await geminiService.correctSpeech(transcript, topic);
+
+      res.json({
+        success: true,
+        original: transcript,
+        corrected,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
 };
