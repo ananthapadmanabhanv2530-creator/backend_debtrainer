@@ -70,3 +70,4 @@ CREATE INDEX IF NOT EXISTS idx_debates_user_id ON debates(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_debate_id ON messages(debate_id);
 CREATE INDEX IF NOT EXISTS idx_debates_status ON debates(status);
 CREATE INDEX IF NOT EXISTS idx_debates_started_at ON debates(started_at);
+ 
