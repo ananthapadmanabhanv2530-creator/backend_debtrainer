@@ -21,8 +21,9 @@ const testConnection = async (retries = 3) => {
     try {
       const client = await pool.connect();
       const res = await client.query('SELECT NOW()');
+      await client.query("ALTER TABLE debates ADD COLUMN IF NOT EXISTS config JSONB DEFAULT '{}';");
       client.release();
-      console.log(`✅ Database connected (attempt ${i + 1})`);
+      console.log(`✅ Database connected (attempt ${i + 1}) and schema verified`);
       return true;
     } catch (err: any) {
       console.warn(`⚠️  DB connection attempt ${i + 1}/${retries} failed: ${err.message}`);
@@ -45,4 +46,3 @@ export const getClient = () => {
   return pool.connect();
 };
 
-export default pool;
