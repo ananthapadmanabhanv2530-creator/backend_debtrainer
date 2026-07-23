@@ -30,7 +30,8 @@ export const debateController = {
       );
 
       // Generate AI opening argument
-      const aiOpening = await geminiService.startDebate(topic, aiSide, difficulty || 'medium');
+      const language = config?.speech?.language || config?.language || 'en-US';
+      const aiOpening = await geminiService.startDebate(topic, aiSide, difficulty || 'medium', language);
 
       // Save AI opening message
       await messageQueries.create(debate.id, 'assistant', aiOpening);
@@ -87,12 +88,14 @@ export const debateController = {
       }));
 
       // Get AI response
+      const language = debate.config?.speech?.language || debate.config?.language || 'en-US';
       const aiResponse = await geminiService.continueDebate(
         debate.topic,
         debate.ai_side,
         debate.difficulty,
         formattedHistory,
-        message
+        message,
+        language
       );
 
       // Save AI response
@@ -136,11 +139,13 @@ export const debateController = {
       }));
 
       // Generate AI evaluation
+      const language = debate.config?.speech?.language || debate.config?.language || 'en-US';
       const evaluation = await geminiService.evaluateDebate(
         debate.topic,
         debate.user_side,
         debate.difficulty,
-        formattedHistory
+        formattedHistory,
+        language
       );
 
       // Save feedback
@@ -313,12 +318,14 @@ export const debateController = {
         message: m.message,
       }));
 
+      const language = debate.config?.speech?.language || debate.config?.language || 'en-US';
       const hint = await geminiService.generateHint(
         debate.topic,
         debate.user_side,
         debate.difficulty,
         formattedHistory,
-        hintType || 'keyword'
+        hintType || 'keyword',
+        language
       );
 
       res.json({
@@ -334,13 +341,13 @@ export const debateController = {
   // POST /debate/correct-speech
   correctSpeech: async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const { transcript, topic } = req.body;
+      const { transcript, topic, language } = req.body;
 
       if (!transcript || typeof transcript !== 'string' || !transcript.trim()) {
         throw new ValidationError('Transcript is required');
       }
 
-      const corrected = await geminiService.correctSpeech(transcript, topic);
+      const corrected = await geminiService.correctSpeech(transcript, topic, language || 'en-US');
 
       res.json({
         success: true,
