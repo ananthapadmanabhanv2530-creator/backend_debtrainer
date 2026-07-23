@@ -109,7 +109,7 @@ FORMAT:
 }
 
 function extractResetTime(err: any): string {
-  if (!err) return ' (Resets daily at 00:00 UTC)';
+  if (!err) return ' (Resets daily at 05:30AM IST)';
 
   const message = err.message || '';
   const detailsStr = JSON.stringify(err?.details || []);
@@ -122,7 +122,7 @@ function extractResetTime(err: any): string {
     detailsStr.includes('GenerateRequestsPerDay');
 
   if (isDailyExhausted) {
-    return ' (Daily free limit reached. Resets at 00:00 UTC)';
+    return ' (Daily free limit reached. Resets at 05:30AM IST)';
   }
 
   const match = message.match(/Please retry in ([\d\.]+)/i);
@@ -143,7 +143,7 @@ function extractResetTime(err: any): string {
     }
   }
 
-  return ' (Resets daily at 00:00 UTC)';
+  return ' (Resets daily at05:30AM IST)';
 }
 
 /**
