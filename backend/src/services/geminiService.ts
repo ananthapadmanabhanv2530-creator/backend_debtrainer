@@ -5,7 +5,7 @@ import { AppError } from '../utils/errors';
 const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const ai = new GoogleGenAI(apiKey ? { apiKey } : {});
 
-// Model fallback chains in decreasing order of capability
+// Essential & Evaluator fallback chain: High to Low power
 const ESSENTIAL_MODELS = [
   process.env.GEMINI_MODEL || 'gemini-3.6-flash',
   'gemini-3.5-flash',
@@ -13,7 +13,9 @@ const ESSENTIAL_MODELS = [
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
 ];
-const NON_ESSENTIAL_MODELS = [
+
+// Speech Auto-Correct fallback chain: Low to High power
+const SPEECH_MODELS = [
   'gemini-2.0-flash-lite',
   'gemini-2.0-flash',
   'gemini-3.5-flash',
@@ -24,6 +26,20 @@ interface DebateMessage {
   role: 'user' | 'assistant' | 'system';
   message: string;
 }
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  'en-US': 'English',
+  'en-GB': 'English (UK)',
+  'hi-IN': 'Hindi',
+  'ta-IN': 'Tamil',
+  'ml-IN': 'Malayalam',
+  'te-IN': 'Telugu',
+  'kn-IN': 'Kannada',
+  'bn-IN': 'Bengali',
+  'gu-IN': 'Gujarati',
+  'mr-IN': 'Marathi',
+  'pa-IN': 'Punjabi',
+};
 
 const DIFFICULTY_PROMPTS: Record<string, string> = {
   easy: `You are a beginner-level debate opponent. Use simple, straightforward arguments.
@@ -56,10 +72,16 @@ Keep your responses comprehensive yet precise (4-6 paragraphs max).`,
 function buildSystemPrompt(
   topic: string,
   aiSide: string,
-  difficulty: string
+  difficulty: string,
+  language: string = 'en-US'
 ): string {
   const sideLabel = aiSide === 'support' ? 'SUPPORTING' : 'OPPOSING';
   const difficultyPrompt = DIFFICULTY_PROMPTS[difficulty] || DIFFICULTY_PROMPTS.medium;
+  const langName = LANGUAGE_NAMES[language] || 'English';
+
+  const langInstruction = language && language !== 'en-US'
+    ? `\n6. MANDATORY LANGUAGE RULE: You MUST conduct the ENTIRE debate, formulate all arguments, state points, and ask follow-up questions strictly in ${langName} (${language}). Do NOT switch or respond in English.`
+    : '';
 
   return `You are an AI debate coach and opponent in a structured debate exercise.
 
@@ -71,13 +93,13 @@ CRITICAL RULES:
 2. You are debating AGAINST the user who holds the opposite position.
 3. Stay on topic. Do not deviate from the debate subject.
 4. Be respectful but firm in your argumentation.
-5. After making your argument, ask a follow-up question to challenge the user's reasoning.
+5. After making your argument, ask a follow-up question to challenge the user's reasoning.${langInstruction}
 
 DIFFICULTY LEVEL:
 ${difficultyPrompt}
 
 FORMAT:
-- Present your arguments clearly
+- Present your arguments clearly in ${langName}
 - Challenge the user's points directly
 - End each response with a probing question or challenge for the user to respond to
 - Do NOT break character or acknowledge you are an AI during the debate`;
@@ -162,20 +184,22 @@ export const geminiService = {
   startDebate: async (
     topic: string,
     aiSide: string,
-    difficulty: string
+    difficulty: string,
+    language: string = 'en-US'
   ): Promise<string> => {
-    const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty);
+    const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty, language);
     const sideLabel = aiSide === 'support' ? 'supporting' : 'opposing';
+    const langName = LANGUAGE_NAMES[language] || 'English';
 
     const prompt = `${systemPrompt}
 
 The debate is about to begin. You are ${sideLabel} the topic: "${topic}".
-Deliver your opening argument. Set the stage for the debate by:
+Deliver your opening argument in ${langName}. Set the stage for the debate by:
 1. Stating your position clearly
 2. Presenting your strongest opening arguments (2-3 key points)
 3. Ending with a challenge or question directed at your opponent
 
-Begin your opening argument now.`;
+Begin your opening argument now in ${langName}.`;
 
     const response = await generateWithFallback(prompt, undefined, ESSENTIAL_MODELS);
     return response.text || '';
@@ -187,9 +211,11 @@ Begin your opening argument now.`;
     aiSide: string,
     difficulty: string,
     history: DebateMessage[],
-    userMessage: string
+    userMessage: string,
+    language: string = 'en-US'
   ): Promise<string> => {
-    const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty);
+    const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty, language);
+    const langName = LANGUAGE_NAMES[language] || 'English';
 
     let conversationContext = `${systemPrompt}\n\nDEBATE HISTORY:\n`;
     for (const msg of history) {
@@ -199,12 +225,12 @@ Begin your opening argument now.`;
 
     conversationContext += `\nOPPONENT's latest argument: ${userMessage}
 
-Now respond to your opponent's argument. Remember to:
+Now respond to your opponent's argument in ${langName}. Remember to:
 1. Address their specific points directly
 2. Provide counter-arguments or rebuttals
 3. Identify any weaknesses in their reasoning
 4. Present new evidence or angles
-5. End with a probing question or challenge`;
+5. End with a probing question or challenge in ${langName}`;
 
     const response = await generateWithFallback(conversationContext, undefined, ESSENTIAL_MODELS);
     return response.text || '';
@@ -216,8 +242,10 @@ Now respond to your opponent's argument. Remember to:
     userSide: string,
     difficulty: string,
     history: DebateMessage[],
-    hintType: string
+    hintType: string,
+    language: string = 'en-US'
   ): Promise<string> => {
+    const langName = LANGUAGE_NAMES[language] || 'English';
     let transcript = '';
     for (const msg of history) {
       const speaker = msg.role === 'user' ? 'USER' : 'AI_OPPONENT';
@@ -225,20 +253,21 @@ Now respond to your opponent's argument. Remember to:
     }
 
     const hintPrompts: Record<string, string> = {
-      keyword: `Suggest 3-5 powerful keywords or phrases the debater should use in their next argument. Focus on impactful terminology, technical terms, and persuasive language relevant to this topic and position.`,
-      outline: `Provide a brief structured outline (3-4 bullet points) for the debater's next argument. Include a main claim, supporting points, and a strong concluding statement.`,
-      counterArgument: `Analyze the AI opponent's last argument and provide 2-3 specific counter-arguments the debater could use. Focus on logical weaknesses and alternative interpretations.`,
-      evidence: `Suggest 2-3 specific examples, statistics, or real-world evidence the debater could cite to strengthen their position. Include brief explanations of why each is relevant.`,
-      socratic: `Provide 2-3 thought-provoking Socratic questions the debater could ask to challenge the opponent's reasoning and reveal weaknesses in their argument.`,
+      keyword: `Suggest 3-5 powerful keywords or phrases in ${langName} the debater should use in their next argument.`,
+      outline: `Provide a brief structured outline (3-4 bullet points) in ${langName} for the debater's next argument.`,
+      counterArgument: `Analyze the AI opponent's last argument and provide 2-3 specific counter-arguments in ${langName} the debater could use.`,
+      evidence: `Suggest 2-3 specific examples, statistics, or real-world evidence in ${langName} the debater could cite.`,
+      socratic: `Provide 2-3 thought-provoking Socratic questions in ${langName} the debater could ask to challenge the opponent.`,
     };
 
     const hintInstruction = hintPrompts[hintType] || hintPrompts.keyword;
 
-    const prompt = `You are a debate coach providing a hint to a student debater.
+    const prompt = `You are a debate coach providing a hint to a student debater in ${langName}.
 
 DEBATE TOPIC: "${topic}"
 STUDENT'S POSITION: ${userSide === 'support' ? 'Supporting' : 'Opposing'}
 DIFFICULTY: ${difficulty}
+LANGUAGE: ${langName} (${language})
 
 DEBATE SO FAR:
 ${transcript}
@@ -248,10 +277,9 @@ HINT REQUEST TYPE: ${hintType}
 ${hintInstruction}
 
 RULES:
+- Respond strictly in ${langName}
 - Be concise and actionable
-- Don't write the argument for them — guide them
-- Keep the hint under 150 words
-- Format clearly with bullet points if needed`;
+- Keep the hint under 150 words`;
 
     const response = await generateWithFallback(prompt, undefined, ESSENTIAL_MODELS);
     return response.text || '';
@@ -262,7 +290,8 @@ RULES:
     topic: string,
     userSide: string,
     difficulty: string,
-    history: DebateMessage[]
+    history: DebateMessage[],
+    language: string = 'en-US'
   ): Promise<{
     logicScore: number;
     evidenceScore: number;
@@ -274,34 +303,25 @@ RULES:
     weaknesses: string[];
     suggestions: string[];
   }> => {
+    const langName = LANGUAGE_NAMES[language] || 'English';
     let transcript = '';
     for (const msg of history) {
       const speaker = msg.role === 'user' ? 'USER' : 'AI_OPPONENT';
       transcript += `${speaker}: ${msg.message}\n\n`;
     }
 
-    const prompt = `You are an expert debate judge and coach. Evaluate the USER's debate performance.
+    const prompt = `You are an expert debate judge and coach evaluating a debate conducted in ${langName}.
 
 DEBATE TOPIC: "${topic}"
 USER'S POSITION: ${userSide === 'support' ? 'Supporting' : 'Opposing'} the topic
 DIFFICULTY LEVEL: ${difficulty}
+LANGUAGE: ${langName} (${language})
 
 FULL DEBATE TRANSCRIPT:
 ${transcript}
 
-Evaluate the USER's performance (NOT the AI opponent) on the following criteria.
-Score each from 0.0 to 10.0 (one decimal place).
-
-SCORING GUIDE:
-- Logic (0-10): Quality of reasoning, argument structure, avoiding fallacies
-- Evidence (0-10): Use of facts, examples, data, and supporting evidence
-- Clarity (0-10): Clear expression, organization of ideas, coherence
-- Confidence (0-10): Assertiveness, conviction, handling of opposition
-- Persuasion (0-10): Overall persuasive impact, rhetorical effectiveness
-- Overall (0-10): Holistic assessment of debate performance
-
-Consider the difficulty level when scoring. At "${difficulty}" level, adjust expectations accordingly.
-Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
+Evaluate the USER's performance on the following criteria. Score each from 0.0 to 10.0.
+Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions written in ${langName}.`;
 
     const evaluationJsonSchema = {
       type: 'object',
@@ -329,7 +349,7 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
         responseMimeType: 'application/json',
         responseSchema: evaluationJsonSchema,
       },
-      NON_ESSENTIAL_MODELS
+      ESSENTIAL_MODELS
     );
 
     const responseText = response.text || '{}';
@@ -383,23 +403,26 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
   // NON-ESSENTIAL: Speech Auto-Correct
   correctSpeech: async (
     transcript: string,
-    topic?: string
+    topic?: string,
+    language: string = 'en-US'
   ): Promise<string> => {
-    const prompt = `You are a speech-to-text auto-correct assistant for a debate platform.
+    const langName = LANGUAGE_NAMES[language] || 'English';
+    const prompt = `You are a speech-to-text auto-correct assistant for a debate platform in ${langName}.
 Your task is to fix phonetic errors, typos, misheard words, capitalization, and punctuation in the raw voice transcript.
 
 ${topic ? `DEBATE TOPIC: "${topic}"` : ''}
+LANGUAGE: ${langName} (${language})
 
 RAW SPEECH TRANSCRIPT:
 "${transcript}"
 
 RULES:
-1. Fix misheard words and speech recognition mistakes (e.g. "for example" instead of "four example", technical debate terminology).
+1. Fix misheard words and speech recognition mistakes in ${langName}.
 2. Fix punctuation, sentence structure, and capitalization.
 3. DO NOT change the debater's core argument, tone, or key ideas.
-4. Output ONLY the corrected text, with no explanations, intro, quotes, or markdown wrappers.`;
+4. Output ONLY the corrected text in ${langName}, with no explanations, intro, quotes, or markdown wrappers.`;
 
-    const response = await generateWithFallback(prompt, undefined, NON_ESSENTIAL_MODELS);
+    const response = await generateWithFallback(prompt, undefined, SPEECH_MODELS);
     return (response.text || '').trim();
   },
 };
