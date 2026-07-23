@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS debates (
   started_at TIMESTAMPTZ DEFAULT NOW(),
   ended_at TIMESTAMPTZ,
   duration INTEGER,
-  overall_score DECIMAL(4,1)
+  overall_score DECIMAL(4,1),
+  config JSONB DEFAULT '{}'
 );
 
 -- Messages table
