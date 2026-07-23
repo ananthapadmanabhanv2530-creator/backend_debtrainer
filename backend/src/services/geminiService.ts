@@ -5,13 +5,14 @@ import { AppError } from '../utils/errors';
 const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const ai = new GoogleGenAI(apiKey ? { apiKey } : {});
 
-// Model chains
+// Model fallback chains (Each model has an independent quota limit in Google Cloud)
 const ESSENTIAL_MODELS = [
   process.env.GEMINI_MODEL || 'gemini-3.6-flash',
-  'gemini-3.1-flash',
   'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
 ];
-const NON_ESSENTIAL_MODELS = ['gemini-1.5-flash'];
+const NON_ESSENTIAL_MODELS = ['gemini-1.5-flash', 'gemini-2.0-flash'];
 
 interface DebateMessage {
   role: 'user' | 'assistant' | 'system';
@@ -96,9 +97,8 @@ function extractResetTime(err: any): string {
 }
 
 /**
- * Executes a Gemini content generation call with automatic fallback.
- * Essential features (debate generation & hints) use 3.6 -> 3.1 -> 2.5 chain.
- * Non-essential features (evaluation & speech auto-correct) use gemini-1.5-flash.
+ * Executes a Gemini content generation call with automatic fallback across independent model families.
+ * Always attempts gemini-3.6-flash first. If quota/rate limit occurs, falls back to 2.5 -> 2.0 -> 1.5.
  */
 async function generateWithFallback(
   contents: any,
@@ -106,7 +106,7 @@ async function generateWithFallback(
   modelsToTry: string[] = ESSENTIAL_MODELS
 ): Promise<any> {
   let lastError: any = null;
-  let hasQuotaError = false;
+  let exhaustedCount = 0;
 
   for (const model of modelsToTry) {
     try {
@@ -117,25 +117,27 @@ async function generateWithFallback(
       });
       return response;
     } catch (err: any) {
+      const status = err?.status || err?.code || 'error';
       console.warn(
-        `[GeminiService] Model '${model}' failed with status ${err?.status || err?.code || 'error'}. Retrying next model...`
+        `[GeminiService] Model '${model}' failed (${status}). Trying next fallback model...`
       );
       lastError = err;
       if (
-        err?.status === 429 ||
-        err?.code === 429 ||
+        status === 429 ||
+        status === 404 ||
         err?.message?.includes('RESOURCE_EXHAUSTED') ||
-        err?.message?.includes('Quota exceeded')
+        err?.message?.includes('Quota exceeded') ||
+        err?.message?.includes('not found')
       ) {
-        hasQuotaError = true;
+        exhaustedCount++;
       }
     }
   }
 
-  if (hasQuotaError) {
+  if (exhaustedCount >= modelsToTry.length) {
     const resetTime = extractResetTime(lastError);
     throw new AppError(
-      `Your free tier debate trainer quota is exhausted for all AI models (Gemini 3.6, 3.1, 2.5). Please come back after reset${resetTime}!`,
+      `Your free tier debate trainer quota is exhausted across all AI models. Please come back after reset${resetTime}!`,
       429
     );
   }
@@ -146,7 +148,7 @@ async function generateWithFallback(
 }
 
 export const geminiService = {
-  // ESSENTIAL: Opening Debate Argument (3.6 -> 3.1 -> 2.5)
+  // ESSENTIAL: Opening Debate Argument (3.6 -> 2.5 -> 2.0 -> 1.5)
   startDebate: async (
     topic: string,
     aiSide: string,
@@ -169,7 +171,7 @@ Begin your opening argument now.`;
     return response.text || '';
   },
 
-  // ESSENTIAL: Multi-turn Debate Responses (3.6 -> 3.1 -> 2.5)
+  // ESSENTIAL: Multi-turn Debate Responses (3.6 -> 2.5 -> 2.0 -> 1.5)
   continueDebate: async (
     topic: string,
     aiSide: string,
@@ -198,7 +200,7 @@ Now respond to your opponent's argument. Remember to:
     return response.text || '';
   },
 
-  // ESSENTIAL: Debate Hints (3.6 -> 3.1 -> 2.5)
+  // ESSENTIAL: Debate Hints (3.6 -> 2.5 -> 2.0 -> 1.5)
   generateHint: async (
     topic: string,
     userSide: string,
@@ -245,7 +247,7 @@ RULES:
     return response.text || '';
   },
 
-  // NON-ESSENTIAL: End-of-debate Evaluation (Locked to gemini-1.5-flash)
+  // NON-ESSENTIAL: End-of-debate Evaluation
   evaluateDebate: async (
     topic: string,
     userSide: string,
@@ -368,7 +370,7 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
     }
   },
 
-  // NON-ESSENTIAL: Speech Auto-Correct (Locked to gemini-1.5-flash)
+  // NON-ESSENTIAL: Speech Auto-Correct
   correctSpeech: async (
     transcript: string,
     topic?: string
