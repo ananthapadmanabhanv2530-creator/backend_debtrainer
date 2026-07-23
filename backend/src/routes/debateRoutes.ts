@@ -31,10 +31,16 @@ const hintSchema = z.object({
   hintType: z.enum(['keyword', 'outline', 'counterArgument', 'evidence', 'socratic']).optional(),
 });
 
+const correctSpeechSchema = z.object({
+  transcript: z.string().min(1, 'Transcript cannot be empty'),
+  topic: z.string().optional(),
+});
+
 router.post('/start', validate(startDebateSchema), debateController.start);
 router.post('/message', validate(sendMessageSchema), debateController.sendMessage);
 router.post('/end', validate(endDebateSchema), debateController.end);
 router.post('/hint', validate(hintSchema), debateController.hint);
+router.post('/correct-speech', validate(correctSpeechSchema), debateController.correctSpeech);
 router.get('/history', debateController.getHistory);
 router.get('/:id', debateController.getById);
 router.delete('/:id', debateController.delete);
