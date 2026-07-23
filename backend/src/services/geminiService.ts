@@ -1,7 +1,9 @@
 import { GoogleGenAI } from '@google/genai';
 import { config } from '../config/index';
 
-const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
+const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+const ai = new GoogleGenAI(apiKey ? { apiKey } : {});
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
 interface DebateMessage {
   role: 'user' | 'assistant' | 'system';
@@ -85,12 +87,12 @@ Deliver your opening argument. Set the stage for the debate by:
 
 Begin your opening argument now.`;
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.6-flash',
-      input: prompt,
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
     });
 
-    return interaction.output_text || '';
+    return response.text || '';
   },
 
   continueDebate: async (
@@ -118,12 +120,12 @@ Now respond to your opponent's argument. Remember to:
 4. Present new evidence or angles
 5. End with a probing question or challenge`;
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.6-flash',
-      input: conversationContext,
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: conversationContext,
     });
 
-    return interaction.output_text || '';
+    return response.text || '';
   },
 
   evaluateDebate: async (
@@ -191,17 +193,16 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
       ],
     };
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.6-flash',
-      input: prompt,
-      response_format: {
-        type: 'text',
-        mime_type: 'application/json',
-        schema: evaluationJsonSchema,
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: evaluationJsonSchema,
       },
     });
 
-    const responseText = interaction.output_text || '{}';
+    const responseText = response.text || '{}';
 
     // Parse the JSON response, handling potential markdown wrapping
     let cleanedText = responseText.trim();
@@ -293,12 +294,12 @@ RULES:
 - Keep the hint under 150 words
 - Format clearly with bullet points if needed`;
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.6-flash',
-      input: prompt,
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
     });
 
-    return interaction.output_text || '';
+    return response.text || '';
   },
 
   correctSpeech: async (
@@ -319,11 +320,11 @@ RULES:
 3. DO NOT change the debater's core argument, tone, or key ideas.
 4. Output ONLY the corrected text, with no explanations, intro, quotes, or markdown wrappers.`;
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.6-flash',
-      input: prompt,
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
     });
 
-    return (interaction.output_text || '').trim();
+    return (response.text || '').trim();
   },
 };
