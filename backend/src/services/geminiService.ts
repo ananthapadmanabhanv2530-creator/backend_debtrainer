@@ -1,9 +1,17 @@
 import { GoogleGenAI } from '@google/genai';
 import { config } from '../config/index';
+import { AppError } from '../utils/errors';
 
 const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const ai = new GoogleGenAI(apiKey ? { apiKey } : {});
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+
+// Model chains
+const ESSENTIAL_MODELS = [
+  process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+  'gemini-3.1-flash',
+  'gemini-2.5-flash',
+];
+const NON_ESSENTIAL_MODELS = ['gemini-1.5-flash'];
 
 interface DebateMessage {
   role: 'user' | 'assistant' | 'system';
@@ -68,7 +76,77 @@ FORMAT:
 - Do NOT break character or acknowledge you are an AI during the debate`;
 }
 
+function extractResetTime(err: any): string {
+  if (!err) return ' (Resets daily at 00:00 UTC / try again shortly)';
+
+  const message = err.message || '';
+  const match = message.match(/Please retry in ([\d\.]+[smh]?)/i);
+  if (match && match[1]) {
+    return ` (Please retry in ${match[1]})`;
+  }
+
+  if (Array.isArray(err.details)) {
+    const retryInfo = err.details.find((d: any) => d?.['@type']?.includes('RetryInfo') || d?.retryDelay);
+    if (retryInfo?.retryDelay) {
+      return ` (Please retry in ${retryInfo.retryDelay})`;
+    }
+  }
+
+  return ' (Resets daily at 00:00 UTC / try again shortly)';
+}
+
+/**
+ * Executes a Gemini content generation call with automatic fallback.
+ * Essential features (debate generation & hints) use 3.6 -> 3.1 -> 2.5 chain.
+ * Non-essential features (evaluation & speech auto-correct) use gemini-1.5-flash.
+ */
+async function generateWithFallback(
+  contents: any,
+  configOptions?: any,
+  modelsToTry: string[] = ESSENTIAL_MODELS
+): Promise<any> {
+  let lastError: any = null;
+  let hasQuotaError = false;
+
+  for (const model of modelsToTry) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents,
+        ...(configOptions ? { config: configOptions } : {}),
+      });
+      return response;
+    } catch (err: any) {
+      console.warn(
+        `[GeminiService] Model '${model}' failed with status ${err?.status || err?.code || 'error'}. Retrying next model...`
+      );
+      lastError = err;
+      if (
+        err?.status === 429 ||
+        err?.code === 429 ||
+        err?.message?.includes('RESOURCE_EXHAUSTED') ||
+        err?.message?.includes('Quota exceeded')
+      ) {
+        hasQuotaError = true;
+      }
+    }
+  }
+
+  if (hasQuotaError) {
+    const resetTime = extractResetTime(lastError);
+    throw new AppError(
+      `Your free tier debate trainer quota is exhausted for all AI models (Gemini 3.6, 3.1, 2.5). Please come back after reset${resetTime}!`,
+      429
+    );
+  }
+
+  throw lastError instanceof AppError
+    ? lastError
+    : new AppError(`AI service error: ${lastError?.message || 'Please try again in a moment.'}`, 500);
+}
+
 export const geminiService = {
+  // ESSENTIAL: Opening Debate Argument (3.6 -> 3.1 -> 2.5)
   startDebate: async (
     topic: string,
     aiSide: string,
@@ -87,14 +165,11 @@ Deliver your opening argument. Set the stage for the debate by:
 
 Begin your opening argument now.`;
 
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-    });
-
+    const response = await generateWithFallback(prompt, undefined, ESSENTIAL_MODELS);
     return response.text || '';
   },
 
+  // ESSENTIAL: Multi-turn Debate Responses (3.6 -> 3.1 -> 2.5)
   continueDebate: async (
     topic: string,
     aiSide: string,
@@ -104,7 +179,6 @@ Begin your opening argument now.`;
   ): Promise<string> => {
     const systemPrompt = buildSystemPrompt(topic, aiSide, difficulty);
 
-    // Build conversation context
     let conversationContext = `${systemPrompt}\n\nDEBATE HISTORY:\n`;
     for (const msg of history) {
       const speaker = msg.role === 'user' ? 'OPPONENT' : 'YOU';
@@ -120,14 +194,58 @@ Now respond to your opponent's argument. Remember to:
 4. Present new evidence or angles
 5. End with a probing question or challenge`;
 
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: conversationContext,
-    });
-
+    const response = await generateWithFallback(conversationContext, undefined, ESSENTIAL_MODELS);
     return response.text || '';
   },
 
+  // ESSENTIAL: Debate Hints (3.6 -> 3.1 -> 2.5)
+  generateHint: async (
+    topic: string,
+    userSide: string,
+    difficulty: string,
+    history: DebateMessage[],
+    hintType: string
+  ): Promise<string> => {
+    let transcript = '';
+    for (const msg of history) {
+      const speaker = msg.role === 'user' ? 'USER' : 'AI_OPPONENT';
+      transcript += `${speaker}: ${msg.message}\n\n`;
+    }
+
+    const hintPrompts: Record<string, string> = {
+      keyword: `Suggest 3-5 powerful keywords or phrases the debater should use in their next argument. Focus on impactful terminology, technical terms, and persuasive language relevant to this topic and position.`,
+      outline: `Provide a brief structured outline (3-4 bullet points) for the debater's next argument. Include a main claim, supporting points, and a strong concluding statement.`,
+      counterArgument: `Analyze the AI opponent's last argument and provide 2-3 specific counter-arguments the debater could use. Focus on logical weaknesses and alternative interpretations.`,
+      evidence: `Suggest 2-3 specific examples, statistics, or real-world evidence the debater could cite to strengthen their position. Include brief explanations of why each is relevant.`,
+      socratic: `Provide 2-3 thought-provoking Socratic questions the debater could ask to challenge the opponent's reasoning and reveal weaknesses in their argument.`,
+    };
+
+    const hintInstruction = hintPrompts[hintType] || hintPrompts.keyword;
+
+    const prompt = `You are a debate coach providing a hint to a student debater.
+
+DEBATE TOPIC: "${topic}"
+STUDENT'S POSITION: ${userSide === 'support' ? 'Supporting' : 'Opposing'}
+DIFFICULTY: ${difficulty}
+
+DEBATE SO FAR:
+${transcript}
+
+HINT REQUEST TYPE: ${hintType}
+
+${hintInstruction}
+
+RULES:
+- Be concise and actionable
+- Don't write the argument for them — guide them
+- Keep the hint under 150 words
+- Format clearly with bullet points if needed`;
+
+    const response = await generateWithFallback(prompt, undefined, ESSENTIAL_MODELS);
+    return response.text || '';
+  },
+
+  // NON-ESSENTIAL: End-of-debate Evaluation (Locked to gemini-1.5-flash)
   evaluateDebate: async (
     topic: string,
     userSide: string,
@@ -193,18 +311,17 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
       ],
     };
 
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
+    const response = await generateWithFallback(
+      prompt,
+      {
         responseMimeType: 'application/json',
         responseSchema: evaluationJsonSchema,
       },
-    });
+      NON_ESSENTIAL_MODELS
+    );
 
     const responseText = response.text || '{}';
 
-    // Parse the JSON response, handling potential markdown wrapping
     let cleanedText = responseText.trim();
     if (cleanedText.startsWith('```')) {
       cleanedText = cleanedText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
@@ -213,7 +330,6 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
     try {
       const evaluation = JSON.parse(cleanedText);
 
-      // Validate and clamp scores
       const clamp = (val: any, min: number, max: number): number => {
         const num = parseFloat(val) || 0;
         return Math.min(max, Math.max(min, Math.round(num * 10) / 10));
@@ -252,56 +368,7 @@ Provide exactly 3 strengths, 3 weaknesses, and 3 actionable suggestions.`;
     }
   },
 
-  generateHint: async (
-    topic: string,
-    userSide: string,
-    difficulty: string,
-    history: DebateMessage[],
-    hintType: string
-  ): Promise<string> => {
-    let transcript = '';
-    for (const msg of history) {
-      const speaker = msg.role === 'user' ? 'USER' : 'AI_OPPONENT';
-      transcript += `${speaker}: ${msg.message}\n\n`;
-    }
-
-    const hintPrompts: Record<string, string> = {
-      keyword: `Suggest 3-5 powerful keywords or phrases the debater should use in their next argument. Focus on impactful terminology, technical terms, and persuasive language relevant to this topic and position.`,
-      outline: `Provide a brief structured outline (3-4 bullet points) for the debater's next argument. Include a main claim, supporting points, and a strong concluding statement.`,
-      counterArgument: `Analyze the AI opponent's last argument and provide 2-3 specific counter-arguments the debater could use. Focus on logical weaknesses and alternative interpretations.`,
-      evidence: `Suggest 2-3 specific examples, statistics, or real-world evidence the debater could cite to strengthen their position. Include brief explanations of why each is relevant.`,
-      socratic: `Provide 2-3 thought-provoking Socratic questions the debater could ask to challenge the opponent's reasoning and reveal weaknesses in their argument.`,
-    };
-
-    const hintInstruction = hintPrompts[hintType] || hintPrompts.keyword;
-
-    const prompt = `You are a debate coach providing a hint to a student debater.
-
-DEBATE TOPIC: "${topic}"
-STUDENT'S POSITION: ${userSide === 'support' ? 'Supporting' : 'Opposing'}
-DIFFICULTY: ${difficulty}
-
-DEBATE SO FAR:
-${transcript}
-
-HINT REQUEST TYPE: ${hintType}
-
-${hintInstruction}
-
-RULES:
-- Be concise and actionable
-- Don't write the argument for them — guide them
-- Keep the hint under 150 words
-- Format clearly with bullet points if needed`;
-
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-    });
-
-    return response.text || '';
-  },
-
+  // NON-ESSENTIAL: Speech Auto-Correct (Locked to gemini-1.5-flash)
   correctSpeech: async (
     transcript: string,
     topic?: string
@@ -320,11 +387,7 @@ RULES:
 3. DO NOT change the debater's core argument, tone, or key ideas.
 4. Output ONLY the corrected text, with no explanations, intro, quotes, or markdown wrappers.`;
 
-    const response = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-    });
-
+    const response = await generateWithFallback(prompt, undefined, NON_ESSENTIAL_MODELS);
     return (response.text || '').trim();
   },
 };
